@@ -40,6 +40,34 @@
 
 .message .message-actions { margin: 9px 0 0; }
 .message .user-actions { margin: 0; padding-right: 3px; }
+.reply-choices { display: grid; gap: 8px; margin: 18px 0 4px; min-width: 0; }
+.reply-choice-heading { margin-bottom: 3px; color: #485567; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.reply-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 48px;
+  padding: 11px 14px;
+  border: 1px solid #e1e6ed;
+  border-radius: 8px;
+  background: #fafbfc;
+  color: #354052;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.7;
+  letter-spacing: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.reply-choice span { min-width: 0; overflow-wrap: anywhere; }
+.reply-choice > .icon { width: 18px; height: 18px; color: #8a96a8; }
+.reply-choice:hover { border-color: #a9c7f9; background: #f3f7ff; color: #255ab2; }
+.reply-choice:hover > .icon { color: #367cf6; }
+.reply-choice:focus-visible { outline: 2px solid #367cf6; outline-offset: 2px; }
+.reply-choice:active { background: #eaf1ff; }
+.reply-choice-footer { margin-top: 2px; color: #858d99; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .user-actions .icon-button { width: 26px; height: 26px; color: #9298a2; }
 .user-actions .icon { width: 15px; height: 15px; }
 

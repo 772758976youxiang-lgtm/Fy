@@ -20,6 +20,8 @@
   let current=chats.find(c=>c.id===read(localStorage,'luma.active',''))||blankChat();
   let busy=false,controller=null,settingsDraft=null,returnFocus=null,toastTimer,renderQueued=false,testController=null;
   const expanded=new Set();
+  const savedRetiredChoices=read(localStorage,'luma.retiredChoices',[]);
+  const retiredChoices=new Set(Array.isArray(savedRetiredChoices)?savedRetiredChoices.filter(id=>typeof id==='string'):[]);
   function uid(){return typeof crypto.randomUUID==='function'?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2);}
   function blankChat(){return {id:uid(),title:'新的对话',messages:[],apiMessages:[],createdAt:Date.now(),updatedAt:Date.now()};}
   function toast(text){clearTimeout(toastTimer);$('#toast').textContent=text;$('#toast').hidden=false;toastTimer=setTimeout(()=>$('#toast').hidden=true,4200);}
@@ -87,7 +89,35 @@
     const links=(sources||[]).map((s,i)=>{const url=C.safeURL(s.url);if(!url)return '';const title=s.title||new URL(url).hostname;return `<a class="source-card" href="${C.escape(url)}" title="${C.escape(title+' · '+new URL(url).hostname)}" target="_blank" rel="noopener noreferrer"><strong><span class="source-number">${i+1}</span>${C.escape(title)}</strong>${icon('arrow','source-link-arrow')}</a>`;}).filter(Boolean);
     return links.length?`<div class="sources" aria-label="网页来源">${links.join('')}</div>`:'';
   }
-  function answerContent(m){return m.role==='assistant'?C.splitAssistantContent(m.content,{streaming:m.status==='streaming'}).content:m.content;}
+  function choiceScope(){return backend?.connected?backend.baseURL:'direct';}
+  function choiceKey(m,chat=current){return [choiceScope(),chat.id,m.id].join('|');}
+  function canReplyChoices(m){return !busy&&!current.demo&&m===current.messages.at(-1)&&m.role==='assistant'&&m.status==='done'&&!m.error&&!retiredChoices.has(choiceKey(m));}
+  function retireReplyChoices(){
+    const m=current.messages.at(-1);
+    if(m?.role!=='assistant'||!C.extractReplyChoices(C.splitAssistantContent(m.content).content))return;
+    retiredChoices.add(choiceKey(m));
+    // Only final replies need retirement records; never evict a live historical reply.
+    const liveKeys=new Set([...chats,current].filter(chat=>chat.messages.length).map(chat=>choiceKey(chat.messages.at(-1),chat)));
+    for(const key of retiredChoices)if(key.startsWith(choiceScope()+'|')&&!liveKeys.has(key))retiredChoices.delete(key);
+    write(localStorage,'luma.retiredChoices',[...retiredChoices]);
+  }
+  function choiceText(markdown){
+    const node=document.createElement('div');node.innerHTML=C.markdown(markdown);
+    for(const link of node.querySelectorAll('a'))link.replaceWith(document.createTextNode(link.textContent+' ('+link.getAttribute('href')+')'));
+    return node.textContent.trim();
+  }
+  function answerContent(m){
+    if(m.role!=='assistant')return m.content;
+    const content=C.splitAssistantContent(m.content,{streaming:m.status==='streaming'}).content,choices=C.extractReplyChoices(content);
+    return choices&&!canReplyChoices(m)?choices.content:content;
+  }
+  function answerHTML(m,content){
+    const choices=C.extractReplyChoices(content);
+    if(!choices)return C.markdown(content);
+    const body=C.markdown(choices.content);
+    if(!canReplyChoices(m))return body;
+    return body+`<div class="reply-choices" role="group" aria-label="选择下一步行动"><div class="reply-choice-heading">${C.escape(choiceText(choices.heading))}</div>${choices.options.map((option,index)=>`<button type="button" class="reply-choice" data-reply-id="${C.escape(m.id)}" data-reply-choice="${index}" title="发送此选项"><span>${C.escape(choiceText(option))}</span>${icon('arrow')}</button>`).join('')}${choices.footer?`<div class="reply-choice-footer">${C.escape(choiceText(choices.footer))}</div>`:''}</div>`;
+  }
   function assistantInner(m){
     const working=m.status==='streaming',open=expanded.has(m.id),sources=sourcesHTML(m.sources),parts=C.splitAssistantContent(m.content,{streaming:working});
     const tools=(m.tools||[]).map(t=>{
@@ -99,7 +129,7 @@
     const notes=parts.notes.length?`<div class="model-notes"><div class="process-sources-heading">${icon('book')}<span>幕后附注 · 模型生成</span></div>${parts.notes.map(note=>`<div class="model-note-text">${C.escape(note)}</div>`).join('')}</div>`:'';
     const details=(m.reasoning?`<div class="reasoning-text">${C.escape(m.reasoning)}</div>`:'')+tools+notes+(sources?`<div class="process-sources"><div class="process-sources-heading">${icon('globe')}<span>参考来源</span></div>${sources}</div>`:'');
     const reasoning=details?`<div class="reasoning"><button type="button" class="reasoning-toggle" data-reason-id="${C.escape(m.id)}" aria-expanded="${open}" aria-controls="reason-${C.escape(m.id)}">${icon('brain')}<span>${working?'正在思考':'已思考'}${m.seconds?'（用时 '+C.escape(m.seconds)+' 秒）':''}</span>${working?'<i class="stream-pulse"></i>':''}${icon('chevron','reason-arrow')}</button><div class="reasoning-body" id="reason-${C.escape(m.id)}" ${open?'':'hidden'}>${details}</div></div>`:'';
-    return `${reasoning}<div class="answer-body">${C.markdown(parts.content)}</div>${working&&!parts.content&&!details?`<div class="pending-content"><i class="stream-pulse"></i>${C.escape(m.phase||'正在整理思路…')}</div>`:''}${m.error?`<div class="error-card">${C.escape(m.error)}</div>`:''}`;
+    return `${reasoning}<div class="answer-body">${answerHTML(m,parts.content)}</div>${working&&!parts.content&&!details?`<div class="pending-content"><i class="stream-pulse"></i>${C.escape(m.phase||'正在整理思路…')}</div>`:''}${m.error?`<div class="error-card">${C.escape(m.error)}</div>`:''}`;
   }
   function preserveProcessScroll(container){
     // Streamed markup must not reset the reader's position in expanded details.
@@ -112,8 +142,8 @@
     restoreScroll();
   }
   function streamRender(m){if(renderQueued)return;renderQueued=requestAnimationFrame(()=>{renderQueued=false;const el=document.getElementById('msg-'+m.id);if(el){const sc=$('#chat-scroll'),near=sc.scrollHeight-sc.scrollTop-sc.clientHeight<160,restoreScroll=preserveProcessScroll(el);el.querySelector('.assistant-content').innerHTML=assistantInner(m);restoreScroll();if(near)sc.scrollTop=sc.scrollHeight;for(const button of el.querySelectorAll('[data-approval-id]'))if(approvalsToReveal.delete(button.dataset.approvalId))button.closest('.tool-approval-actions').scrollIntoView({block:'nearest',inline:'nearest'});}});}
-  function setBusy(value){busy=value;$('#send-button').classList.toggle('stop',value);$('#send-button').setAttribute('aria-label',value?'停止生成':'发送消息');$('#send-button').innerHTML=value?'<span class="stop-square"></span>':icon('up');$('#message-input').disabled=value;$('#model-button').disabled=value;$('#effort-button').disabled=value;$('#search-toggle').disabled=value;$('#tools-toggle').disabled=value;}
-  function startNew(){if(busy){toast('请先停止当前回答，再开启新对话。');return;}current=blankChat();$('#message-input').value='';resizeInput();renderMessages();renderHistory();closeSidebar();$('#message-input').focus();}
+  function setBusy(value){busy=value;$('#send-button').classList.toggle('stop',value);$('#send-button').setAttribute('aria-label',value?'停止生成':'发送消息');$('#send-button').innerHTML=value?'<span class="stop-square"></span>':icon('up');$('#message-input').disabled=value;$('#model-button').disabled=value;$('#effort-button').disabled=value;$('#search-toggle').disabled=value;$('#tools-toggle').disabled=value;const m=current.messages.at(-1),body=m&&document.getElementById('msg-'+m.id)?.querySelector('.answer-body');if(body)body.innerHTML=answerHTML(m,C.splitAssistantContent(m.content,{streaming:m.status==='streaming'}).content);}
+  function startNew(){if(busy){toast('请先停止当前回答，再开启新对话。');return;}retireReplyChoices();current=blankChat();$('#message-input').value='';resizeInput();renderMessages();renderHistory();closeSidebar();$('#message-input').focus();}
   function closeSidebar(){$('#sidebar').classList.remove('open');$('#sidebar-mask').hidden=true;$('#mobile-menu').setAttribute('aria-expanded','false');}
   function resizeInput(){const t=$('#message-input');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,160)+'px';}
   async function grantHost(url){if(location.protocol!=='chrome-extension:'||!chrome.permissions)return;const u=new URL(url),orig=u.origin+'/*';if(!(await chrome.permissions.contains({origins:[orig]}))){const allowed=await chrome.permissions.request({origins:[orig]});if(!allowed)throw new Error('未授权此 API 地址，请使用官方地址或授予该主机访问权限。');}}
@@ -124,6 +154,7 @@
     if(backend?.connected){await sendBackend(input,retry);return;}
     if(!secrets.apiKey){openSettings('api');toast('填入 DeepSeek API Key 后，就可以开始对话。');return;}
     const cfg={...settings,model:settings.customModel||settings.model},keys={...secrets};
+    retireReplyChoices();
     setBusy(true);
     let url;try{url=C.endpoint(cfg.baseURL);await grantHost(url);if(cfg.searchEnabled)await grantHost(cfg.searchURL);}catch(e){setBusy(false);toast(e.message);return;}
     let user;
@@ -159,7 +190,7 @@
   function adoptSession(session){if(!session)return;current=session;const i=chats.findIndex(c=>c.id===session.id);if(i>=0)chats[i]=session;else chats.unshift(session);saveChats();renderHistory();}
   async function sendBackend(input,retry){
     if(!backend.settings.hasApiKey){openSettings('api');toast('请配置 DeepSeek API Key');return;}
-    const id=current.id;setBusy(true);controller=new AbortController();const signal=controller.signal;let m;
+    const id=current.id;retireReplyChoices();setBusy(true);controller=new AbortController();const signal=controller.signal;let m;
     try{
       // Migrate a browser-only conversation before its first server turn.
       if(current.messages.length&&!chats.some(c=>c.id===id&&c.serverStored)){await backend.importSession(current);current.serverStored=true;}
@@ -214,7 +245,7 @@
     }catch(e){$('#backend-state').textContent=e.message;if(!auto)toast(e.message);}finally{b.disabled=false;setBusy(false);}
   }
   $('#new-chat').addEventListener('click',startNew);$('.brand').addEventListener('click',e=>{e.preventDefault();startNew();});$('#chat-search').addEventListener('input',renderHistory);
-  $('#history').addEventListener('click',e=>{const b=e.target.closest('[data-chat-id]');if(!b)return;if(busy){toast('请先停止当前回答，再切换对话。');return;}current=chats.find(c=>c.id===b.dataset.chatId);saveChats();renderMessages();renderHistory();closeSidebar();scrollBottom(true);});
+  $('#history').addEventListener('click',e=>{const b=e.target.closest('[data-chat-id]');if(!b)return;if(busy){toast('请先停止当前回答，再切换对话。');return;}if(current.id!==b.dataset.chatId)retireReplyChoices();current=chats.find(c=>c.id===b.dataset.chatId);saveChats();renderMessages();renderHistory();closeSidebar();scrollBottom(true);});
   $('#model-button').addEventListener('click',()=>toggleMenu($('#model-button'),$('#model-menu')));$('#effort-button').addEventListener('click',()=>toggleMenu($('#effort-button'),$('#effort-menu')));$('#chat-menu-button').addEventListener('click',()=>toggleMenu($('#chat-menu-button'),$('#chat-menu')));
   for(const menu of [$('#model-menu'),$('#effort-menu')]){
     menu.addEventListener('input',e=>{if(busy||!e.target.matches('[data-effort-slider]'))return;const effort=EFFORTS[Number(e.target.value)];if(effort){settings.effort=effort[0];renderControls();}});
@@ -248,7 +279,7 @@
   $('#export-all').addEventListener('click',exportAll);$('#clear-chats').addEventListener('click',()=>{if(busy){toast('请先停止当前回答。');return;}confirmAction('清空所有对话？','聊天记录将被删除。',async()=>{try{if(backend?.connected)await backend.clear();chats=[];current=blankChat();saveChats();renderMessages();renderHistory();toast('对话已清空');}catch(e){toast(e.message);}});});
   $('#forget-keys').addEventListener('click',async()=>{if(busy){toast('请先停止当前回答。');return;}testController?.abort();secrets={};settings.remember=false;settingsDraft={remember:false};$('#settings-save').disabled=false;$('#test-connection').disabled=false;$('#remember-toggle').setAttribute('aria-checked','false');$('#api-key').value='';$('#search-key').value='';try{if(backend?.connected){await backend.forget();$('#api-key').placeholder='sk-…';$('#search-key').placeholder='留空复用 DeepSeek Key';}else{localStorage.removeItem('luma.keys');sessionStorage.removeItem('luma.keys');}write(localStorage,backend?.connected?'luma.backend.settings':'luma.settings',settings);renderControls();toast('密钥已移除');}catch(e){toast(e.message);}});
   $('#chat-menu').addEventListener('click',e=>{const b=e.target.closest('[data-chat-action]');if(!b)return;closeMenus();if(busy){toast('请先停止当前回答。');return;}if(!current.messages.length){toast('当前还没有对话。');return;}const action=b.dataset.chatAction;if(action==='export')exportCurrent();if(action==='delete')confirmAction('删除这段对话？','这将删除「'+current.title+'」的本地记录。',async()=>{const id=current.id;try{if(backend?.connected)await backend.remove(id);chats=chats.filter(c=>c.id!==id);if(current.id===id)current=blankChat();saveChats();renderMessages();renderHistory();}catch(e){toast(e.message);}});if(action==='rename'){modal('给对话一个名字','<label class="field-label" for="rename-input">对话名称</label><input class="field-input" id="rename-input" maxlength="60" value="'+C.escape(current.title)+'">',[{label:'取消',fn:closeSmall},{label:'保存',primary:true,fn:async()=>{const id=current.id,name=$('#rename-input').value.trim();if(!name){$('#rename-input').focus();return;}try{if(backend?.connected){const {session}=await backend.rename(id,name);const i=chats.findIndex(c=>c.id===id);if(i>=0)chats[i]={...session,serverStored:true};if(current.id===id)current=chats[i];saveChats();renderHistory();}else{current.title=name;rememberCurrent();}renderMessages();closeSmall();}catch(e){toast(e.message);}}}],'pen');$('#rename-input').focus();$('#rename-input').select();}});
-  $('#messages').addEventListener('click',async e=>{const approval=e.target.closest('[data-approval-id]');if(approval){const id=approval.dataset.approvalId;if(!busy||!backend?.connected||pendingApprovals.has(id))return;pendingApprovals.add(id);const m=current.messages.at(-1);streamRender(m);try{await backend.request('tool-approvals/'+encodeURIComponent(id),{method:'POST',data:{allow:approval.dataset.allow==='true'}});}catch(error){toast(error.message);}finally{pendingApprovals.delete(id);streamRender(m);}return;}const reason=e.target.closest('[data-reason-id]');if(reason){const id=reason.dataset.reasonId;expanded.has(id)?expanded.delete(id):expanded.add(id);reason.setAttribute('aria-expanded',String(expanded.has(id)));reason.nextElementSibling.hidden=!expanded.has(id);return;}const cp=e.target.closest('[data-copy-id]');if(cp){copy(answerContent(current.messages.find(m=>m.id===cp.dataset.copyId)));return;}const retry=e.target.closest('[data-retry-id]');if(retry){const user=current.messages.findLast(m=>m.role==='user');send(user.content,true);return;}const code=e.target.closest('.code-copy');if(code)copy(code.closest('.code-block').querySelector('pre code').textContent);});
+  $('#messages').addEventListener('click',async e=>{const choice=e.target.closest('[data-reply-choice]');if(choice){const m=current.messages.at(-1),index=Number(choice.dataset.replyChoice);if(!m||!canReplyChoices(m)||m.id!==choice.dataset.replyId||!Number.isInteger(index)||index<0)return;const options=C.extractReplyChoices(C.splitAssistantContent(m.content).content)?.options;if(options?.[index])send(choiceText(options[index]));return;}const approval=e.target.closest('[data-approval-id]');if(approval){const id=approval.dataset.approvalId;if(!busy||!backend?.connected||pendingApprovals.has(id))return;pendingApprovals.add(id);const m=current.messages.at(-1);streamRender(m);try{await backend.request('tool-approvals/'+encodeURIComponent(id),{method:'POST',data:{allow:approval.dataset.allow==='true'}});}catch(error){toast(error.message);}finally{pendingApprovals.delete(id);streamRender(m);}return;}const reason=e.target.closest('[data-reason-id]');if(reason){const id=reason.dataset.reasonId;expanded.has(id)?expanded.delete(id):expanded.add(id);reason.setAttribute('aria-expanded',String(expanded.has(id)));reason.nextElementSibling.hidden=!expanded.has(id);return;}const cp=e.target.closest('[data-copy-id]');if(cp){copy(answerContent(current.messages.find(m=>m.id===cp.dataset.copyId)));return;}const retry=e.target.closest('[data-retry-id]');if(retry){const user=current.messages.findLast(m=>m.role==='user');send(user.content,true);return;}const code=e.target.closest('.code-copy');if(code)copy(code.closest('.code-block').querySelector('pre code').textContent);});
   $('#mobile-menu').addEventListener('click',()=>{const open=!$('#sidebar').classList.contains('open');$('#sidebar').classList.toggle('open',open);$('#sidebar-mask').hidden=!open;$('#mobile-menu').setAttribute('aria-expanded',String(open));});$('#sidebar-mask').addEventListener('click',closeSidebar);
   $('#small-close').addEventListener('click',closeSmall);$('#small-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeSmall();});$('#settings-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)closeSettings();});
   // Selecting a model replaces its option; the original event path stays intact.
