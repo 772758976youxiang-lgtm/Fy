@@ -1,0 +1,12 @@
+# Share configuration, never local credentials or conversation history.
+/data/*
+!/data/settings.json
+!/data/tools.json
+**/credentials.json
+**/tool-credentials.json
+**/sessions.json
+node_modules/
+.env
+.env.*
+*.log
+*.tmp

@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "116",
+  "name": "澄蓝 Luma · AI 聊天",
+  "version": "2.0.0",
+  "description": "原创蓝白 AI 聊天空间。原生 DeepSeek、流式输出、折叠思考、网页搜索与工具调用框架。",
+  "action": {"default_title": "打开澄蓝 Luma", "default_icon": {"16":"icons/icon16.png","32":"icons/icon32.png","48":"icons/icon48.png","128":"icons/icon128.png"}},
+  "background": {"service_worker": "background.js"},
+  "icons": {"16":"icons/icon16.png","32":"icons/icon32.png","48":"icons/icon48.png","128":"icons/icon128.png"},
+  "host_permissions": ["https://api.deepseek.com/*", "http://127.0.0.1/*", "http://localhost/*"],
+  "optional_host_permissions": ["https://*/*"],
+  "content_security_policy": {"extension_pages":"script-src 'self'; object-src 'none'"}
+}
